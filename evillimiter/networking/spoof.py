@@ -1,6 +1,11 @@
 import time
+import logging
 import threading
 from scapy.all import Ether, ARP, conf, get_if_hwaddr # pylint: disable=no-name-in-module
+
+# suppress scapy's noisy ARP warnings ("You should be providing the Ethernet
+# destination MAC address when sending an is-at ARP") — we handle L2 headers manually
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 
 from .host import Host
 from evillimiter.common.globals import BROADCAST
