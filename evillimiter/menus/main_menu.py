@@ -38,15 +38,18 @@ class MainMenu(CommandMenu):
         limit_parser.add_flag('--upload', 'upload')
         limit_parser.add_flag('--download', 'download')
         limit_parser.add_flag('--full', 'full')
+        limit_parser.add_parameterized_flag('--except', 'except_')
 
         block_parser = self.parser.add_subparser('block', self._block_handler)
         block_parser.add_parameter('id')
         block_parser.add_flag('--upload', 'upload')
         block_parser.add_flag('--download', 'download')
         block_parser.add_flag('--full', 'full')
+        block_parser.add_parameterized_flag('--except', 'except_')
 
         free_parser = self.parser.add_subparser('free', self._free_handler)
         free_parser.add_parameter('id')
+        free_parser.add_parameterized_flag('--except', 'except_')
 
         add_parser = self.parser.add_subparser('add', self._add_handler)
         add_parser.add_parameter('ip')
@@ -181,7 +184,7 @@ class MainMenu(CommandMenu):
         Handles 'limit' command-line argument
         Limits bandwith of host to specified rate
         """
-        hosts = self._get_hosts_by_ids(args.id)
+        hosts = self._get_hosts_by_ids(args.id, getattr(args, 'except_', None))
         if hosts is None or len(hosts) == 0:
             return
 
@@ -210,7 +213,7 @@ class MainMenu(CommandMenu):
         Handles 'block' command-line argument
         Blocks internet communication for host
         """
-        hosts = self._get_hosts_by_ids(args.id)
+        hosts = self._get_hosts_by_ids(args.id, getattr(args, 'except_', None))
         direction = self._parse_direction_args(args)
 
         if hosts is not None and len(hosts) > 0:
@@ -233,7 +236,7 @@ class MainMenu(CommandMenu):
         Handles 'free' command-line argument
         Frees the host from all limitations
         """
-        hosts = self._get_hosts_by_ids(args.id)
+        hosts = self._get_hosts_by_ids(args.id, getattr(args, 'except_', None))
         if hosts is not None and len(hosts) > 0:
             for host in hosts:
                 was_limited = host.limited
@@ -628,16 +631,19 @@ class MainMenu(CommandMenu):
 {y}      (--upload) (--download){r}{}{b}e.g.: limit 4 100kbit
 {s}      limit 2,3,4 1gbit --download
 {s}      limit all 200kbit --upload
-{s}      limit 2 200kbit --full  (kills IPv6){r}
+{s}      limit 2 200kbit --full  (kills IPv6)
+{s}      limit all 200kbit --except 0,10{r}
 
 {y}block [ID1,ID2,...]{r}{}blocks internet access of host(s).
 {y}      (--upload) (--download){r}{}{b}e.g.: block 3,2
 {s}      block all --upload
-{s}      block 2 --full  (kills IPv6){r}
+{s}      block 2 --full  (kills IPv6)
+{s}      block all --except 0,10{r}
 
 {y}free [ID1,ID2,...]{r}{}unlimits/unblocks host(s).
 {b}{s}e.g.: free 3
-{s}      free all{r}
+{s}      free all
+{s}      free all --except 5{r}
 
 {y}add [IP] (--mac [MAC]){r}{}adds custom host to host list.
 {s}mac resolved automatically.
@@ -708,40 +714,60 @@ class MainMenu(CommandMenu):
     def _print_help_reminder(self):
         IO.print('type {Y}help{R} or {Y}?{R} to show command information.'.format(Y=IO.Fore.LIGHTYELLOW_EX, R=IO.Style.RESET_ALL))
 
-    def _get_hosts_by_ids(self, ids_string):
+    def _get_hosts_by_ids(self, ids_string, except_string=None):
         if ids_string == 'all':
             with self.hosts_lock:
-                return self.hosts.copy()
+                hosts = self.hosts.copy()
+        else:
+            ids = ids_string.split(',')
+            hosts = set()
 
-        ids = ids_string.split(',')
-        hosts = set()
+            with self.hosts_lock:
+                for id_ in ids:
+                    is_mac = netutils.validate_mac_address(id_)
+                    is_ip = netutils.validate_ip_address(id_)
+                    is_id_ = id_.isdigit()
 
-        with self.hosts_lock:
-            for id_ in ids:
-                is_mac = netutils.validate_mac_address(id_)
-                is_ip = netutils.validate_ip_address(id_)
-                is_id_ = id_.isdigit()
-
-                if not is_mac and not is_ip and not is_id_:
-                    IO.error('invalid identifier(s): \'{}\'.'.format(ids_string))
-                    return
-
-                if is_mac or is_ip:
-                    found = False
-                    for host in self.hosts:
-                        if host.mac == id_.lower() or host.ip == id_:
-                            found = True
-                            hosts.add(host)
-                            break
-                    if not found:
-                        IO.error('no host matching {}{}{}.'.format(IO.Fore.LIGHTYELLOW_EX, id_, IO.Style.RESET_ALL))
+                    if not is_mac and not is_ip and not is_id_:
+                        IO.error('invalid identifier(s): \'{}\'.'.format(ids_string))
                         return
-                else:
-                    id_ = int(id_)
-                    if len(self.hosts) == 0 or id_ not in range(len(self.hosts)):
-                        IO.error('no host with id {}{}{}.'.format(IO.Fore.LIGHTYELLOW_EX, id_, IO.Style.RESET_ALL))
-                        return
-                    hosts.add(self.hosts[id_])
+
+                    if is_mac or is_ip:
+                        found = False
+                        for host in self.hosts:
+                            if host.mac == id_.lower() or host.ip == id_:
+                                found = True
+                                hosts.add(host)
+                                break
+                        if not found:
+                            IO.error('no host matching {}{}{}.'.format(IO.Fore.LIGHTYELLOW_EX, id_, IO.Style.RESET_ALL))
+                            return
+                    else:
+                        id_ = int(id_)
+                        if len(self.hosts) == 0 or id_ not in range(len(self.hosts)):
+                            IO.error('no host with id {}{}{}.'.format(IO.Fore.LIGHTYELLOW_EX, id_, IO.Style.RESET_ALL))
+                            return
+                        hosts.add(self.hosts[id_])
+
+        # --except: remove excluded hosts from the result
+        if except_string:
+            except_ids = except_string.split(',')
+            except_hosts = set()
+            with self.hosts_lock:
+                for eid in except_ids:
+                    if eid.isdigit():
+                        idx = int(eid)
+                        if idx in range(len(self.hosts)):
+                            except_hosts.add(self.hosts[idx])
+                    else:
+                        for host in self.hosts:
+                            if host.mac == eid.lower() or host.ip == eid:
+                                except_hosts.add(host)
+                                break
+            hosts -= except_hosts
+            if except_hosts:
+                excluded = ', '.join(h.ip for h in except_hosts)
+                IO.ok('excluding: {}{}{}'.format(IO.Fore.LIGHTYELLOW_EX, excluded, IO.Style.RESET_ALL))
 
         return hosts
 
