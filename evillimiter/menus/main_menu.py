@@ -150,6 +150,7 @@ class MainMenu(CommandMenu):
             '{}ID{}'.format(IO.Style.BRIGHT, IO.Style.RESET_ALL),
             '{}IP address{}'.format(IO.Style.BRIGHT, IO.Style.RESET_ALL),
             '{}MAC address{}'.format(IO.Style.BRIGHT, IO.Style.RESET_ALL),
+            '{}Vendor{}'.format(IO.Style.BRIGHT, IO.Style.RESET_ALL),
             '{}Hostname{}'.format(IO.Style.BRIGHT, IO.Style.RESET_ALL),
             '{}Status{}'.format(IO.Style.BRIGHT, IO.Style.RESET_ALL)
         ]]
@@ -160,6 +161,7 @@ class MainMenu(CommandMenu):
                     '{}{}{}'.format(IO.Fore.LIGHTYELLOW_EX, self._get_host_id(host, lock=False), IO.Style.RESET_ALL),
                     host.ip,
                     host.mac,
+                    getattr(host, 'vendor', ''),
                     host.name,
                     host.pretty_status()
                 ])

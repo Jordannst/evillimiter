@@ -6,6 +6,7 @@ class Host(object):
         self.ip = ip
         self.mac = mac
         self.name = name
+        self.vendor = ''
         self.spoofed = False
         self.limited = False
         self.blocked = False
