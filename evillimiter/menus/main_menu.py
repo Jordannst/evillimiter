@@ -37,11 +37,13 @@ class MainMenu(CommandMenu):
         limit_parser.add_parameter('rate')
         limit_parser.add_flag('--upload', 'upload')
         limit_parser.add_flag('--download', 'download')
+        limit_parser.add_flag('--full', 'full')
 
         block_parser = self.parser.add_subparser('block', self._block_handler)
         block_parser.add_parameter('id')
         block_parser.add_flag('--upload', 'upload')
         block_parser.add_flag('--download', 'download')
+        block_parser.add_flag('--full', 'full')
 
         free_parser = self.parser.add_subparser('free', self._free_handler)
         free_parser.add_parameter('id')
@@ -194,7 +196,12 @@ class MainMenu(CommandMenu):
             self.limiter.limit(host, direction, rate)
             self.bandwidth_monitor.add(host)
 
-            IO.ok('{}{}{r} {} {}limited{r} to {}.'.format(IO.Fore.LIGHTYELLOW_EX, host.ip, Direction.pretty_direction(direction), IO.Fore.LIGHTRED_EX, rate, r=IO.Style.RESET_ALL))
+            # --full: enable RA kill to force IPv4 fallback
+            if args.full:
+                host.ipv6_killed = True
+
+            mode_str = ' {}(full mode, IPv6 killed){r}'.format(IO.Fore.CYAN, r=IO.Style.RESET_ALL) if args.full else ''
+            IO.ok('{}{}{r} {} {}limited{r} to {}.{}'.format(IO.Fore.LIGHTYELLOW_EX, host.ip, Direction.pretty_direction(direction), IO.Fore.LIGHTRED_EX, rate, mode_str, r=IO.Style.RESET_ALL))
 
     def _block_handler(self, args):
         """
@@ -211,7 +218,13 @@ class MainMenu(CommandMenu):
 
                 self.limiter.block(host, direction)
                 self.bandwidth_monitor.add(host)
-                IO.ok('{}{}{r} {} {}blocked{r}.'.format(IO.Fore.LIGHTYELLOW_EX, host.ip, Direction.pretty_direction(direction), IO.Fore.RED, r=IO.Style.RESET_ALL))
+
+                # --full: enable RA kill to force IPv4 fallback
+                if args.full:
+                    host.ipv6_killed = True
+
+                mode_str = ' {}(full mode, IPv6 killed){r}'.format(IO.Fore.CYAN, r=IO.Style.RESET_ALL) if args.full else ''
+                IO.ok('{}{}{r} {} {}blocked{r}.{}'.format(IO.Fore.LIGHTYELLOW_EX, host.ip, Direction.pretty_direction(direction), IO.Fore.RED, mode_str, r=IO.Style.RESET_ALL))
 
     def _free_handler(self, args):
         """
@@ -610,11 +623,13 @@ class MainMenu(CommandMenu):
 {y}limit [ID1,ID2,...] [rate]{r}{}limits bandwith of host(s) (uload/dload).
 {y}      (--upload) (--download){r}{}{b}e.g.: limit 4 100kbit
 {s}      limit 2,3,4 1gbit --download
-{s}      limit all 200kbit --upload{r}
+{s}      limit all 200kbit --upload
+{s}      limit 2 200kbit --full  (kills IPv6){r}
 
 {y}block [ID1,ID2,...]{r}{}blocks internet access of host(s).
 {y}      (--upload) (--download){r}{}{b}e.g.: block 3,2
-{s}      block all --upload{r}
+{s}      block all --upload
+{s}      block 2 --full  (kills IPv6){r}
 
 {y}free [ID1,ID2,...]{r}{}unlimits/unblocks host(s).
 {b}{s}e.g.: free 3

@@ -226,16 +226,17 @@ class ARPSpoofer(object):
                         for _ in range(self.burst_count):
                             self._socket.send(pkt)
 
-                    # --- RA kill (every N cycles) ---
+                    # --- RA kill (every N cycles, only for --full hosts) ---
                     self._ra_cycle += 1
                     if self._ra_cycle >= self._ra_every:
                         self._ra_cycle = 0
                         for host in hosts:
                             if not self._running:
                                 return
-                            ra_packets = self._build_ra_kill_packets(host)
-                            for pkt in ra_packets:
-                                self._socket.send(pkt)
+                            if host.ipv6_killed:
+                                ra_packets = self._build_ra_kill_packets(host)
+                                for pkt in ra_packets:
+                                    self._socket.send(pkt)
 
                     consecutive_errors = 0
                     time.sleep(self.interval)
@@ -275,7 +276,8 @@ class ARPSpoofer(object):
         Uses a temporary socket with retry logic for reliability.
         """
         arp_packets = self._build_restore_packets(host)
-        ra_packets = self._build_ra_restore_packets(host)
+        should_restore_ipv6 = host.ipv6_killed
+        ra_packets = self._build_ra_restore_packets(host) if should_restore_ipv6 else []
         restore_count = 5
 
         for attempt in range(3):
@@ -287,11 +289,12 @@ class ARPSpoofer(object):
                         for _ in range(restore_count):
                             sock.send(pkt)
 
-                    # restore RA (IPv6) — re-enable IPv6 for target
+                    # restore RA (IPv6) — only if --full was used
                     for pkt in ra_packets:
                         for _ in range(restore_count):
                             sock.send(pkt)
 
+                    host.ipv6_killed = False
                     return  # success
                 finally:
                     sock.close()

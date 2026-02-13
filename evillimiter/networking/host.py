@@ -10,6 +10,7 @@ class Host(object):
         self.limited = False
         self.blocked = False
         self.watched = False
+        self.ipv6_killed = False
 
     def __eq__(self, other):
         return self.ip == other.ip
