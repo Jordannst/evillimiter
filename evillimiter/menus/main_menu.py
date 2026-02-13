@@ -221,7 +221,29 @@ class MainMenu(CommandMenu):
         hosts = self._get_hosts_by_ids(args.id)
         if hosts is not None and len(hosts) > 0:
             for host in hosts:
+                was_limited = host.limited
+                was_blocked = host.blocked
+                was_spoofed = host.spoofed
+
                 self._free_host(host)
+
+                # build detailed confirmation message
+                actions = []
+                if was_spoofed:
+                    actions.append('ARP restored')
+                    actions.append('IPv6 restored')
+                if was_limited:
+                    actions.append('limit removed')
+                if was_blocked:
+                    actions.append('block removed')
+
+                detail = ' ({})'.format(', '.join(actions)) if actions else ''
+                IO.ok('{}{}{r} {}freed{r}.{}'.format(
+                    IO.Fore.LIGHTYELLOW_EX, host.ip,
+                    IO.Fore.LIGHTGREEN_EX,
+                    detail,
+                    r=IO.Style.RESET_ALL
+                ))
 
     def _add_handler(self, args):
         """
