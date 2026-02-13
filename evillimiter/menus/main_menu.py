@@ -277,6 +277,7 @@ class MainMenu(CommandMenu):
 
             header_off = [
                 ('ID', 5), ('IP address', 18), ('Hostname', hname_max_len + 2),
+                ('Status', 18), ('IPv6', 10),
                 ('Current (per s)', 20), ('Total', 16), ('Packets', 0)
             ]
 
@@ -297,10 +298,27 @@ class MainMenu(CommandMenu):
                 x_off = x_rst
 
                 for host, result in host_results:
+                    # determine status string
+                    if host.blocked:
+                        status_str = 'Blocked'
+                    elif host.limited:
+                        limit_info = self.limiter._host_dict.get(host)
+                        if limit_info and 'rate' in limit_info:
+                            status_str = 'Limited {}'.format(limit_info['rate'])
+                        else:
+                            status_str = 'Limited'
+                    else:
+                        status_str = 'Spoofed'
+
+                    # IPv6 status: RA kill is active when host is spoofed
+                    ipv6_str = 'Killed' if host.spoofed else '-'
+
                     result_data = [
                         str(self._get_host_id(host)),
                         host.ip,
                         host.name,
+                        status_str,
+                        ipv6_str,
                         '{}↑ {}↓'.format(result.upload_rate, result.download_rate),
                         '{}↑ {}↓'.format(result.upload_total_size, result.download_total_size),
                         '{}↑ {}↓'.format(result.upload_total_count, result.download_total_count)
