@@ -239,6 +239,7 @@ class MainMenu(CommandMenu):
                 was_limited = host.limited
                 was_blocked = host.blocked
                 was_spoofed = host.spoofed
+                was_ipv6_killed = host.ipv6_killed
 
                 self._free_host(host)
 
@@ -246,6 +247,7 @@ class MainMenu(CommandMenu):
                 actions = []
                 if was_spoofed:
                     actions.append('ARP restored')
+                if was_ipv6_killed:
                     actions.append('IPv6 restored')
                 if was_limited:
                     actions.append('limit removed')
@@ -348,7 +350,7 @@ class MainMenu(CommandMenu):
                         status_str = 'Spoofed'
 
                     # IPv6 status: RA kill is active when host is spoofed
-                    ipv6_str = 'Killed' if host.spoofed else '-'
+                    ipv6_str = 'Killed' if host.ipv6_killed else '-'
 
                     result_data = [
                         str(self._get_host_id(host)),

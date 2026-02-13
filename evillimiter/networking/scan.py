@@ -2,7 +2,7 @@ import time
 import socket
 from netaddr import EUI, NotRegisteredError
 from scapy.all import srp, Ether, ARP # pylint: disable=no-name-in-module
-from concurrent.futures import ThreadPoolExecutor
+
 
 from .host import Host
 from evillimiter.console.io import IO
