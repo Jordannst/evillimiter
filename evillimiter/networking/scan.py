@@ -1,14 +1,17 @@
+import sys
 import time
 import socket
+import threading
 from netaddr import EUI, NotRegisteredError
 from scapy.all import srp, Ether, ARP # pylint: disable=no-name-in-module
-
 
 from .host import Host
 from evillimiter.console.io import IO
         
 
 class HostScanner(object):
+    _SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+
     def __init__(self, interface, iprange):
         self.interface = interface
         self.iprange = iprange
@@ -26,6 +29,21 @@ class HostScanner(object):
         except (NotRegisteredError, IndexError, Exception):
             return ''
 
+    def _spinner_thread(self, total, stop_event):
+        """Animated spinner shown while srp() scan is in progress."""
+        i = 0
+        while not stop_event.is_set():
+            elapsed = time.time() - self._scan_start
+            frame = self._SPINNER[i % len(self._SPINNER)]
+            msg = '\r  {} scanning {} addresses... ({:.1f}s)'.format(frame, total, elapsed)
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+            i += 1
+            stop_event.wait(0.1)
+        # clear spinner line
+        sys.stdout.write('\r' + ' ' * 60 + '\r')
+        sys.stdout.flush()
+
     def scan(self, iprange=None):
         """
         Broadcast ARP scan using srp() — sends all requests at once.
@@ -34,19 +52,28 @@ class HostScanner(object):
         iprange = self.iprange if iprange is None else iprange
         target_ips = [str(x) for x in iprange]
 
-        IO.ok('scanning {} addresses...'.format(len(target_ips)))
-
         # single broadcast ARP sweep — all IPs scanned simultaneously
         packets = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=target_ips)
-        start_time = time.time()
+        self._scan_start = time.time()
+
+        # start spinner
+        stop_event = threading.Event()
+        spinner = threading.Thread(target=self._spinner_thread, args=(len(target_ips), stop_event), daemon=True)
+        spinner.start()
 
         try:
             answered, _ = srp(packets, timeout=self.timeout, iface=self.interface, verbose=0)
         except KeyboardInterrupt:
+            stop_event.set()
+            spinner.join()
             IO.ok('aborted.')
             return []
 
-        elapsed = time.time() - start_time
+        # stop spinner
+        stop_event.set()
+        spinner.join()
+
+        elapsed = time.time() - self._scan_start
         hosts = []
 
         for sent, received in answered:
@@ -54,7 +81,7 @@ class HostScanner(object):
             mac = received.hwsrc
             vendor = self._get_vendor(mac)
 
-            # resolve hostname (non-blocking, fast timeout)
+            # resolve hostname
             name = ''
             try:
                 host_info = socket.gethostbyaddr(ip)
@@ -66,7 +93,7 @@ class HostScanner(object):
             host.vendor = vendor
             hosts.append(host)
 
-        IO.ok('scan completed in {:.1f}s.'.format(elapsed))
+        IO.ok('{} hosts discovered in {:.1f}s.'.format(len(hosts), elapsed))
         return hosts
 
     def scan_for_reconnects(self, hosts, iprange=None):
