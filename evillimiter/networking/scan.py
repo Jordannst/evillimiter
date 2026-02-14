@@ -69,11 +69,6 @@ class HostScanner(object):
             IO.ok('aborted.')
             return []
 
-        # stop spinner
-        stop_event.set()
-        spinner.join()
-
-        elapsed = time.time() - self._scan_start
         hosts = []
 
         for sent, received in answered:
@@ -93,6 +88,11 @@ class HostScanner(object):
             host.vendor = vendor
             hosts.append(host)
 
+        # stop spinner after all processing is done
+        stop_event.set()
+        spinner.join()
+
+        elapsed = time.time() - self._scan_start
         IO.ok('{} hosts discovered in {:.1f}s.'.format(len(hosts), elapsed))
         return hosts
 
