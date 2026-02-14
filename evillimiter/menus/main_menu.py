@@ -134,14 +134,12 @@ class MainMenu(CommandMenu):
             for host in self.hosts:
                 self._free_host(host)
             
-        IO.spacer()
         hosts = self.host_scanner.scan(iprange)
 
         self.hosts_lock.acquire()
         self.hosts = hosts
         self.hosts_lock.release()
 
-        IO.ok('{}{}{} hosts discovered.'.format(IO.Fore.LIGHTYELLOW_EX, len(hosts), IO.Style.RESET_ALL))
         IO.spacer()
 
     def _hosts_handler(self, args):
@@ -717,7 +715,7 @@ class MainMenu(CommandMenu):
     def _get_hosts_by_ids(self, ids_string, except_string=None):
         if ids_string == 'all':
             with self.hosts_lock:
-                hosts = self.hosts.copy()
+                hosts = set(self.hosts.copy())
         else:
             ids = ids_string.split(',')
             hosts = set()
